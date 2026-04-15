@@ -86,30 +86,19 @@ async def fetch(session, url):
 BASE_URL = "http://api2.isportsapi.com"
 
 async def get_live_scores(session):
-    """Получает live-матчи футбола (ближайшие)."""
     url = f"{BASE_URL}/sport/football/livescores?api_key={ISPORTS_API_KEY}"
     return await fetch(session, url)
 
-async def get_fixtures(session, date=None):
-    """Получает расписание матчей на дату (по умолчанию сегодня)."""
-    if date is None:
-        date = datetime.now().strftime("%Y%m%d")
-    url = f"{BASE_URL}/sport/football/schedule?api_key={ISPORTS_API_KEY}&date={date}"
-    return await fetch(session, url)
-
 async def get_odds(session, match_id):
-    """Получает коэффициенты для конкретного матча."""
     url = f"{BASE_URL}/sport/football/odds?api_key={ISPORTS_API_KEY}&match_id={match_id}"
     return await fetch(session, url)
 
 async def get_h2h(session, team1, team2):
-    """История очных встреч."""
     url = f"{BASE_URL}/sport/football/h2h?api_key={ISPORTS_API_KEY}&team1={team1}&team2={team2}"
     return await fetch(session, url)
 
-async def get_team_stats(session, team_id):
-    """Статистика команды (форма, голы)."""
-    url = f"{BASE_URL}/sport/football/teamstats?api_key={ISPORTS_API_KEY}&team_id={team_id}"
+async def get_team_stats(session, team_name):
+    url = f"{BASE_URL}/sport/football/teamstats?api_key={ISPORTS_API_KEY}&team_name={team_name}"
     return await fetch(session, url)
 
 # =====================
@@ -126,7 +115,6 @@ def result_icon(gf, ga):
         return "❌"
 
 def calc_form_from_results(results):
-    """Вычисляет форму по последним 5 матчам (победа=1, ничья=0.5)."""
     if not results:
         return 0.5
     score = 0
@@ -166,7 +154,7 @@ def compute_score(h2h_score, home_form, away_form, table_diff, goal_diff, odds):
     return score
 
 # =====================
-# ПОСТРОЕНИЕ КЭША
+# ПОСТРОЕНИЕ КЭША (ФУТБОЛ)
 # =====================
 async def build_football():
     global FOOTBALL_CACHE, EXPRESS_CACHE
@@ -181,18 +169,17 @@ async def build_football():
                 away = m.get("away_name", "")
                 match_time = m.get("match_time", "")
                 match_id = m.get("match_id")
+                league = m.get("league_name", "🌍 Неизвестно")
 
                 if not home or not away or not match_time or not match_id:
                     continue
 
-                # Время
                 mt = datetime.strptime(match_time, "%Y-%m-%d %H:%M:%S")
                 now = datetime.now(ZoneInfo("Europe/Moscow"))
                 hours_left = (mt - now).total_seconds() / 3600
                 if hours_left < 1 or hours_left > 24:
                     continue
 
-                # Коэффициенты
                 odds_data = await get_odds(session, match_id)
                 odds_info = odds_data.get("data", {}) if isinstance(odds_data, dict) else {}
                 home_odds = odds_info.get("home_odds")
@@ -205,14 +192,11 @@ async def build_football():
                 if home_odds < 3.5 or away_odds > 2.2:
                     continue
 
-                # H2H
                 h2h_data = await get_h2h(session, home, away)
                 h2h_matches = h2h_data.get("data", []) if isinstance(h2h_data, dict) else []
                 h2h_score = 0.0
                 h2h_icons = ["➖"] * 5
                 for i, h in enumerate(h2h_matches[:5]):
-                    if i >= 5:
-                        break
                     home_goals = h.get("home_score", 0)
                     away_goals = h.get("away_score", 0)
                     if home_goals > away_goals:
@@ -227,7 +211,6 @@ async def build_football():
                 if h2h_matches:
                     h2h_score /= len(h2h_matches[:5])
 
-                # Форма команд
                 home_stats = await get_team_stats(session, home)
                 away_stats = await get_team_stats(session, away)
 
@@ -240,20 +223,18 @@ async def build_football():
                     last5 = home_stats["data"].get("last_5_matches", [])
                     home_form = calc_form_from_results(last5)
                     for i, r in enumerate(last5[:5]):
-                        home_icons[i] = "✅" if r == "W" else ("♻️" if r == "D" else "❌")
-                        form_icons[i] = home_icons[i]
+                        icon = "✅" if r == "W" else ("♻️" if r == "D" else "❌")
+                        home_icons[i] = icon
+                        form_icons[i] = icon
                 if away_stats and "data" in away_stats:
                     last5_away = away_stats["data"].get("last_5_matches", [])
                     away_form = calc_form_from_results(last5_away)
 
-                # Разница мячей и позиция в таблице (заглушки, т.к. iSports может не давать)
                 goal_diff = 0.0
                 table_diff = 0
 
-                # Итоговый Score
                 score = compute_score(h2h_score, home_form, away_form, table_diff, goal_diff, home_odds)
 
-                # Сохранение
                 cur.execute(
                     "INSERT INTO predictions (home, away, score, handicap, odds, time) VALUES (?, ?, ?, ?, ?, ?)",
                     (home, away, score, get_handicap(score), home_odds, mt.isoformat())
@@ -262,7 +243,7 @@ async def build_football():
 
                 results.append({
                     "date": mt.strftime("%d.%m.%Y"),
-                    "country": "🌍 Футбол",
+                    "country": league,
                     "time": mt.strftime("%H:%M"),
                     "home": home,
                     "away": away,
@@ -288,7 +269,6 @@ async def build_football():
 
 async def build_hockey():
     global HOCKEY_CACHE
-    # Хоккей через iSports API пока не реализован, оставляем заглушку
     HOCKEY_CACHE = []
 
 async def build_all():
@@ -296,9 +276,6 @@ async def build_all():
     await build_hockey()
     logger.info("Cache updated")
 
-# =====================
-# ФОРМАТИРОВАНИЕ
-# =====================
 def format_matches(data, title):
     if not data:
         return f"🧞‍♂️ {title}: сегодня лампа пуста"
@@ -315,9 +292,6 @@ def format_matches(data, title):
         msg += f"🤼‍♂️ Общая форма (5): {' '.join(m['form_icons'])}\n\n"
     return msg
 
-# =====================
-# HANDLERS
-# =====================
 @router.message(Command("start"))
 async def start(m: Message):
     await m.answer("🧞 JIN v7 (iSports API) ACTIVE\nРеальные данные с российских БК\nФутбол / Хоккей / Экспресс", reply_markup=keyboard)
@@ -334,9 +308,6 @@ async def hockey_cmd(m: Message):
 async def express_cmd(m: Message):
     await m.answer(format_matches(EXPRESS_CACHE, "🍺 ЭКСПРЕСС (ТОП-4)"))
 
-# =====================
-# LOOP
-# =====================
 async def loop():
     while True:
         try:
