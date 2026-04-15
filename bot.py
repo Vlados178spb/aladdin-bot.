@@ -2,8 +2,10 @@ import asyncio
 import aiohttp
 import sqlite3
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from deep_translator import GoogleTranslator
+from functools import lru_cache
 
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command
@@ -82,6 +84,24 @@ async def fetch(session, url, headers=None):
         return {}
 
 # =====================
+# TRANSLATION CACHE
+# =====================
+@lru_cache(maxsize=500)
+def translate_to_russian(text):
+    """Переводит текст на русский язык, игнорируя уже переведенные названия."""
+    if not text:
+        return text
+    # Если текст уже содержит кириллицу, вероятно, он уже переведен
+    if any('а' <= char <= 'я' or 'А' <= char <= 'Я' for char in text):
+        return text
+    try:
+        translator = GoogleTranslator(source='auto', target='ru')
+        return translator.translate(text)
+    except Exception as e:
+        logger.warning(f"Translation failed for '{text}': {e}")
+        return text
+
+# =====================
 # FOOTBALL-DATA API
 # =====================
 HEADERS_FD = {"X-Auth-Token": FOOTBALL_KEY}
@@ -127,8 +147,90 @@ def extract_odds(odds_data, home_team, away_team):
     return None, None
 
 # =====================
+# NHL API (для хоккея)
+# =====================
+async def get_nhl_team_stats(session, team_id):
+    """Получает статистику команды NHL через неофициальное API."""
+    url = f"https://statsapi.web.nhl.com/api/v1/teams/{team_id}/stats"
+    return await fetch(session, url)
+
+async def get_nhl_schedule(session, date=None):
+    """Получает расписание матчей NHL на указанную дату."""
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
+    url = f"https://statsapi.web.nhl.com/api/v1/schedule?date={date}"
+    return await fetch(session, url)
+
+def extract_nhl_team_stats(stats_data):
+    """Извлекает полезную статистику из ответа NHL API."""
+    if not stats_data or "stats" not in stats_data:
+        return {"form": 0.5, "goal_diff": 0.0, "home_form": 0.5}
+    
+    try:
+        splits = stats_data["stats"][0]["splits"]
+        # Статистика за сезон
+        season_stats = next((s for s in splits if s["stat"]["gamesPlayed"] > 0), None)
+        if season_stats:
+            stat = season_stats["stat"]
+            games = stat.get("gamesPlayed", 1)
+            wins = stat.get("wins", 0)
+            ot = stat.get("ot", 0)
+            goals_per_game = stat.get("goalsPerGame", 2.5)
+            goals_against_per_game = stat.get("goalsAgainstPerGame", 2.5)
+            
+            form = (wins + ot * 0.5) / games
+            goal_diff = goals_per_game - goals_against_per_game
+            
+            # Упрощенно, т.к. NHL API не дает отдельно домашнюю статистику без доп. запросов
+            return {"form": round(form, 3), "goal_diff": round(goal_diff, 3), "home_form": round(form, 3)}
+    except:
+        pass
+    
+    return {"form": 0.5, "goal_diff": 0.0, "home_form": 0.5}
+
+# =====================
 # STATS PROCESSING
 # =====================
+def result_icon(gf, ga):
+    if gf is None or ga is None:
+        return "➖"
+    if gf > ga:
+        return "✅"
+    elif gf == ga:
+        return "♻️"
+    else:
+        return "❌"
+
+def get_form_icons(matches, team_id, is_home_matches=False):
+    icons = []
+    for m in matches[:5]:
+        if is_home_matches:
+            if m["homeTeam"]["id"] != team_id:
+                continue
+            gf = m["score"]["fullTime"]["home"]
+            ga = m["score"]["fullTime"]["away"]
+        else:
+            if m["homeTeam"]["id"] == team_id:
+                gf = m["score"]["fullTime"]["home"]
+                ga = m["score"]["fullTime"]["away"]
+            else:
+                gf = m["score"]["fullTime"]["away"]
+                ga = m["score"]["fullTime"]["home"]
+        icons.append(result_icon(gf, ga))
+    while len(icons) < 5:
+        icons.append("➖")
+    return icons[:5]
+
+def get_h2h_icons(h2h_matches):
+    icons = []
+    for m in h2h_matches[:5]:
+        gf = m["score"]["fullTime"]["home"]
+        ga = m["score"]["fullTime"]["away"]
+        icons.append(result_icon(gf, ga))
+    while len(icons) < 5:
+        icons.append("➖")
+    return icons[:5]
+
 def calc_form(matches, team_id):
     if not matches:
         return 0.5
@@ -225,23 +327,20 @@ def get_handicap(score):
         return "+3.5 / +4.0"
 
 # =====================
-# MAIN ENGINE (ИСПРАВЛЕНО: матчи из Odds API)
+# MAIN ENGINE
 # =====================
 async def build_football():
     global FOOTBALL_CACHE, EXPRESS_CACHE
     results = []
     async with aiohttp.ClientSession() as session:
-        # 1. Получаем коэффициенты из The Odds API (основной источник матчей)
         odds_list = await get_all_odds(session, "soccer")
         if not isinstance(odds_list, list):
             logger.warning("No odds data")
             return
 
-        # 2. Получаем матчи из Football-Data для обогащения статистикой
         fd_data = await get_scheduled_matches(session)
         fd_matches = fd_data.get("matches", [])
 
-        # 3. Обрабатываем каждый матч из Odds API
         for game in odds_list:
             try:
                 home = game["home_team"]
@@ -260,7 +359,6 @@ async def build_football():
                 if hours_left < 1 or hours_left > 24:
                     continue
 
-                # Ищем соответствующий матч в Football-Data (нечёткое сравнение)
                 fd_match = None
                 for m in fd_matches:
                     if (m["homeTeam"]["name"].lower() in home.lower() or home.lower() in m["homeTeam"]["name"].lower()) and \
@@ -268,11 +366,20 @@ async def build_football():
                         fd_match = m
                         break
 
+                country = "🌍 Неизвестно"
+                h2h_icons = ["➖"] * 5
+                home_icons = ["➖"] * 5
+                form_icons = ["➖"] * 5
+                h2h_score = 0.0
+                home_form = away_form = 0.5
+                table_diff = 0
+                goal_diff = 0.0
+
                 if fd_match:
-                    # Полная статистика
                     home_id = fd_match["homeTeam"]["id"]
                     away_id = fd_match["awayTeam"]["id"]
                     competition_code = fd_match["competition"]["code"]
+                    country = fd_match.get("competition", {}).get("name", "🌍 Неизвестно")
 
                     home_matches = await get_team_last_matches(session, home_id)
                     away_matches = await get_team_last_matches(session, away_id)
@@ -280,6 +387,7 @@ async def build_football():
 
                     h2h_data = await get_h2h(session, home_id, away_id)
                     h2h_matches = h2h_data.get("matches", [])
+                    h2h_icons = get_h2h_icons(h2h_matches)
                     h2h_score = calc_h2h_score(h2h_matches[:5])
                     await asyncio.sleep(0.5)
 
@@ -287,40 +395,44 @@ async def build_football():
                     away_form = calc_form(away_matches, away_id)
                     goal_diff = get_goal_diff(home_matches, home_id)
 
+                    home_icons = get_form_icons(home_matches, home_id, is_home_matches=True)
+                    form_icons = get_form_icons(home_matches, home_id, is_home_matches=False)
+
                     home_pos = await get_table_position(session, home_id, competition_code)
                     away_pos = await get_table_position(session, away_id, competition_code)
                     await asyncio.sleep(0.5)
 
-                    table_diff = 0
                     if home_pos is not None and away_pos is not None:
                         if home_pos < away_pos:
                             table_diff = 1
                         elif home_pos > away_pos:
                             table_diff = -1
 
-                    score = compute_score(h2h_score, home_form, away_form, table_diff, goal_diff, home_odds)
-                else:
-                    # Упрощённый расчёт (только на основе коэффициентов)
-                    h2h_score = 0.0
-                    home_form = away_form = 0.5
-                    table_diff = 0
-                    goal_diff = 0.0
-                    score = compute_score(h2h_score, home_form, away_form, table_diff, goal_diff, home_odds)
+                score = compute_score(h2h_score, home_form, away_form, table_diff, goal_diff, home_odds)
 
-                # Сохраняем в БД
                 cur.execute(
                     "INSERT INTO predictions (home, away, score, handicap, odds, time) VALUES (?, ?, ?, ?, ?, ?)",
                     (home, away, score, get_handicap(score), home_odds, mt.isoformat())
                 )
                 conn.commit()
 
+                # Переводим названия команд на русский язык
+                home_ru = translate_to_russian(home)
+                away_ru = translate_to_russian(away)
+
                 results.append({
-                    "home": home,
-                    "away": away,
+                    "date": mt.strftime("%d.%m.%Y"),
+                    "country": country,
                     "time": mt.strftime("%H:%M"),
-                    "odds": round(home_odds, 2),
-                    "score": round(score, 3),
+                    "home": home_ru,
+                    "away": away_ru,
+                    "home_odds": round(home_odds, 2),
+                    "away_odds": round(away_odds, 2),
                     "handicap": get_handicap(score),
+                    "h2h_icons": h2h_icons,
+                    "home_icons": home_icons,
+                    "form_icons": form_icons,
+                    "score": round(score, 3),
                     "confidence": round(score * (home_odds / 3.5), 3)
                 })
 
@@ -340,6 +452,13 @@ async def build_hockey():
         if not isinstance(odds_list, list):
             return
 
+        # Получаем расписание NHL для сопоставления команд
+        schedule_data = await get_nhl_schedule(session)
+        games = schedule_data.get("dates", [])
+        nhl_games = []
+        if games:
+            nhl_games = games[0].get("games", [])
+
         for game in odds_list:
             try:
                 home = game["home_team"]
@@ -358,17 +477,70 @@ async def build_hockey():
                 if hours_left < 1 or hours_left > 24:
                     continue
 
-                score = 0.5  # заглушка
+                # Ищем матч в расписании NHL для получения ID команд
+                nhl_game = None
+                for ng in nhl_games:
+                    if (ng["teams"]["home"]["team"]["name"].lower() in home.lower() or home.lower() in ng["teams"]["home"]["team"]["name"].lower()) and \
+                       (ng["teams"]["away"]["team"]["name"].lower() in away.lower() or away.lower() in ng["teams"]["away"]["team"]["name"].lower()):
+                        nhl_game = ng
+                        break
+
+                home_form = away_form = 0.5
+                goal_diff = 0.0
+                h2h_icons = ["➖"] * 5
+                home_icons = ["➖"] * 5
+                form_icons = ["➖"] * 5
+                h2h_score = 0.0
+                table_diff = 0
+
+                if nhl_game:
+                    home_id = nhl_game["teams"]["home"]["team"]["id"]
+                    away_id = nhl_game["teams"]["away"]["team"]["id"]
+
+                    # Получаем статистику команд
+                    home_stats = await get_nhl_team_stats(session, home_id)
+                    away_stats = await get_nhl_team_stats(session, away_id)
+                    await asyncio.sleep(0.5)
+
+                    home_stat = extract_nhl_team_stats(home_stats)
+                    away_stat = extract_nhl_team_stats(away_stats)
+
+                    home_form = home_stat["form"]
+                    away_form = away_stat["form"]
+                    goal_diff = home_stat["goal_diff"]
+
+                    # Получаем позиции в дивизионе
+                    home_rank = nhl_game["teams"]["home"]["leagueRecord"].get("divisionRank", 0)
+                    away_rank = nhl_game["teams"]["away"]["leagueRecord"].get("divisionRank", 0)
+                    if home_rank and away_rank:
+                        if home_rank < away_rank:
+                            table_diff = 1
+                        elif home_rank > away_rank:
+                            table_diff = -1
+
+                score = compute_score(h2h_score, home_form, away_form, table_diff, goal_diff, home_odds)
+
+                # Переводим названия команд на русский язык
+                home_ru = translate_to_russian(home)
+                away_ru = translate_to_russian(away)
+
                 results.append({
-                    "home": home,
-                    "away": away,
+                    "date": mt.strftime("%d.%m.%Y"),
+                    "country": "🏒 NHL",
                     "time": mt.strftime("%H:%M"),
-                    "odds": round(home_odds, 2),
-                    "score": score,
+                    "home": home_ru,
+                    "away": away_ru,
+                    "home_odds": round(home_odds, 2),
+                    "away_odds": round(away_odds, 2),
                     "handicap": get_handicap(score),
-                    "confidence": score * (home_odds / 3.5)
+                    "h2h_icons": h2h_icons,
+                    "home_icons": home_icons,
+                    "form_icons": form_icons,
+                    "score": round(score, 3),
+                    "confidence": round(score * (home_odds / 3.5), 3)
                 })
-            except:
+            except Exception as e:
+                logger.error(f"Error processing hockey {home} vs {away}: {e}")
                 continue
 
     results.sort(key=lambda x: x["confidence"], reverse=True)
@@ -388,11 +560,14 @@ def format_matches(data, title):
 
     msg = f"📊 <b>{title}</b>\n\n"
     for i, m in enumerate(data, 1):
-        msg += f"{i}. {m['home']} vs {m['away']}\n"
-        msg += f"🕒 {m['time']}\n"
-        msg += f"💰 Кэф: {m['odds']}\n"
-        msg += f"🎯 Фора: {m['handicap']}\n"
-        msg += f"📈 Score: {m['score']} | Уверенность: {m['confidence']}\n\n"
+        msg += f"{i}. 📆 {m['date']}\n"
+        msg += f"🇷🇺 {m['country']}\n"
+        msg += f"🕰️ {m['time']} МСК\n"
+        msg += f"🏟️ {m['home']} ({m['home_odds']}) — {m['away']} ({m['away_odds']})\n"
+        msg += f"⛳ Рекомендуемая фора: {m['handicap']}\n"
+        msg += f"⏳ Очные (дома): {' '.join(m['h2h_icons'])}\n"
+        msg += f"🏟️ Дома (посл. 5): {' '.join(m['home_icons'])}\n"
+        msg += f"🤼‍♂️ Общая форма (5): {' '.join(m['form_icons'])}\n\n"
     return msg
 
 # =====================
@@ -400,7 +575,7 @@ def format_matches(data, title):
 # =====================
 @router.message(Command("start"))
 async def start(m: Message):
-    await m.answer("🧞 JIN v5.1 ACTIVE\nРасширенный охват матчей (Odds API)\nФутбол / Хоккей / Экспресс", reply_markup=keyboard)
+    await m.answer("🧞 JIN v6 ACTIVE\nПолная статистика по шаблону\nФутбол / Хоккей / Экспресс", reply_markup=keyboard)
 
 @router.message(F.text == "⚽ Футбол")
 async def football_cmd(m: Message):
