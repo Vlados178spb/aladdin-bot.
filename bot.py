@@ -1,249 +1,446 @@
 import asyncio
 import aiohttp
 import sqlite3
-import numpy as np
+import logging
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
 # =====================
-# 🔑 KEYS (ВСТАВЛЕНЫ РЕАЛЬНЫЕ КЛЮЧИ)
+# KEYS
 # =====================
 BOT_TOKEN = "8694698903:AAHK51pTIQo4TFcBBF1RbL4Kh5OZRiLGTiM"
 ODDS_API_KEY = "2be3c040e725dabfe695ae282049a8b0"
-FOOTBALL_DATA_KEY = "f286e713f060483e83f6d722f1d58ddf"
+FOOTBALL_KEY = "f286e713f060483e83f6d722f1d58ddf"
 
+# =====================
+# BOT SETUP
+# =====================
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
+router = Router()
+dp.include_router(router)
 
 # =====================
-# 📦 DB
+# DATABASE
 # =====================
-conn = sqlite3.connect("jin_v28.db")
+conn = sqlite3.connect("jin_stats.db")
 cur = conn.cursor()
-
 cur.execute("""
-CREATE TABLE IF NOT EXISTS bets (
+CREATE TABLE IF NOT EXISTS predictions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    match TEXT,
-    sport TEXT,
+    home TEXT,
+    away TEXT,
+    score REAL,
+    handicap TEXT,
     odds REAL,
-    prob REAL,
-    edge REAL
+    result TEXT,
+    time TEXT
 )
 """)
 conn.commit()
 
 # =====================
-# 📱 UI
+# CACHE
 # =====================
+FOOTBALL_CACHE = []
+HOCKEY_CACHE = []
+EXPRESS_CACHE = []
+
 keyboard = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="⚽ Футбол 24H")],
-        [KeyboardButton(text="🏒 Хоккей 24H")],
-        [KeyboardButton(text="🏀 NBA 24H")],
-        [KeyboardButton(text="🎾 Теннис 24H")],
-        [KeyboardButton(text="🔥 Экспресс")],
+        [KeyboardButton(text="⚽ Футбол")],
+        [KeyboardButton(text="🏒 Хоккей")],
+        [KeyboardButton(text="🍺 Экспресс")]
     ],
     resize_keyboard=True
 )
 
 # =====================
-# 🌐 ODDS API
+# LOGGING
 # =====================
-async def fetch(session, url):
-    async with session.get(url) as r:
-        return await r.json()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("JIN")
 
-async def get_odds(session, sport):
-    url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h"
+# =====================
+# HTTP HELPERS
+# =====================
+async def fetch(session, url, headers=None):
+    try:
+        async with session.get(url, headers=headers) as r:
+            if r.status == 429:
+                await asyncio.sleep(5)
+                return await fetch(session, url, headers)
+            return await r.json()
+    except Exception as e:
+        logger.error(f"Fetch error: {e}")
+        return {}
+
+# =====================
+# FOOTBALL-DATA API
+# =====================
+HEADERS_FD = {"X-Auth-Token": FOOTBALL_KEY}
+
+async def get_scheduled_matches(session):
+    """Получает ближайшие матчи (до 100) из Football-Data."""
+    url = "https://api.football-data.org/v4/matches?status=SCHEDULED&limit=100"
+    return await fetch(session, url, HEADERS_FD)
+
+async def get_team_last_matches(session, team_id, limit=5):
+    """Последние завершённые матчи команды."""
+    url = f"https://api.football-data.org/v4/teams/{team_id}/matches?limit={limit}&status=FINISHED"
+    return await fetch(session, url, HEADERS_FD)
+
+async def get_h2h(session, home_id, away_id, limit=5):
+    """Очные встречи (последние 5 матчей между командами)."""
+    # Получаем матчи, где home_id играет дома против away_id
+    url = f"https://api.football-data.org/v4/matches?homeTeam={home_id}&awayTeam={away_id}&limit={limit}&status=FINISHED"
+    return await fetch(session, url, HEADERS_FD)
+
+async def get_standings(session, competition_code):
+    """Турнирная таблица."""
+    url = f"https://api.football-data.org/v4/competitions/{competition_code}/standings"
+    return await fetch(session, url, HEADERS_FD)
+
+# =====================
+# THE ODDS API
+# =====================
+async def get_all_odds(session, sport_key):
+    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h&bookmakers=pinnacle"
     return await fetch(session, url)
 
-# =====================
-# ⚽ FOOTBALL DATA FORM ENGINE
-# =====================
-async def get_form(session, team_id):
-    url = f"https://api.football-data.org/v4/teams/{team_id}/matches?limit=5"
-    headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
-    async with session.get(url, headers=headers) as r:
-        data = await r.json()
+def extract_odds(odds_data, home_team, away_team):
+    """Извлекает коэффициенты для конкретного матча."""
+    if not isinstance(odds_data, list):
+        return None, None
+    for game in odds_data:
+        if game.get("home_team", "").lower() == home_team.lower() and game.get("away_team", "").lower() == away_team.lower():
+            bookmakers = game.get("bookmakers", [])
+            if not bookmakers:
+                continue
+            h2h = next((m for m in bookmakers[0].get("markets", []) if m["key"] == "h2h"), None)
+            if not h2h:
+                continue
+            outcomes = h2h["outcomes"]
+            home_odds = next((o["price"] for o in outcomes if o["name"] == home_team), None)
+            away_odds = next((o["price"] for o in outcomes if o["name"] == away_team), None)
+            return home_odds, away_odds
+    return None, None
 
-    matches = data.get("matches", [])
-    wins = 0
-    goals_for = 0
-    goals_against = 0
-
+# =====================
+# STATS PROCESSING
+# =====================
+def calc_form(matches, team_id):
+    """Возвращает средний балл формы (победа=1, ничья=0.5)."""
+    if not matches:
+        return 0.5
+    total = 0
+    count = 0
     for m in matches:
-        score = m.get("score", {}).get("fullTime", {})
-        if not score:
+        if m["homeTeam"]["id"] == team_id:
+            gf = m["score"]["fullTime"]["home"]
+            ga = m["score"]["fullTime"]["away"]
+        else:
+            gf = m["score"]["fullTime"]["away"]
+            ga = m["score"]["fullTime"]["home"]
+        if gf is None or ga is None:
             continue
-        gf = score.get("home") or 0
-        ga = score.get("away") or 0
-        goals_for += gf
-        goals_against += ga
         if gf > ga:
-            wins += 1
+            total += 1.0
+        elif gf == ga:
+            total += 0.5
+        count += 1
+    return total / count if count > 0 else 0.5
 
-    form_score = 0.5 + (wins * 0.08) + ((goals_for - goals_against) * 0.02)
-    return max(0.3, min(form_score, 0.75))
-
-# =====================
-# 🧠 MARKET PROB
-# =====================
-def market_prob(odds):
-    return 1 / odds
-
-# =====================
-# ⚖️ EDGE
-# =====================
-def edge(p, m):
-    return (p - m) + (p - 0.5) * 0.25
-
-# =====================
-# 💰 KELLY
-# =====================
-def kelly(p, odds):
-    b = odds - 1
-    q = 1 - p
-    return max(0, ((b * p - q) / b) * 0.30)
-
-# =====================
-# ⚖️ FILTER (STABLE)
-# =====================
-def valid(odds, p, e):
-    return (
-        1.45 <= odds <= 2.85 and
-        p >= 0.57 and
-        e >= 0.025
-    )
-
-# =====================
-# 🧠 PROCESS
-# =====================
-def process(data):
-    results = []
-    for m in data:
-        try:
-            home = m["home_team"]
-            away = m["away_team"]
-            bookmakers = m["bookmakers"][0]["markets"][0]["outcomes"]
-            home_odds = next(x["price"] for x in bookmakers if x["name"] == home)
-            away_odds = next(x["price"] for x in bookmakers if x["name"] == away)
-            odds = home_odds
-
-            # 🧠 FORM PROXY (simplified stable version)
-            home_form = 0.62 if "Man" in home or "Real" in home else 0.52
-            away_form = 0.50
-
-            p = home_form / (home_form + away_form)
-            mkt = market_prob(odds)
-            e = edge(p, mkt)
-
-            if not valid(odds, p, e):
-                continue
-
-            stake = kelly(p, odds) * 1000
-            results.append({
-                "match": f"{home} vs {away}",
-                "odds": round(odds, 2),
-                "prob": round(p, 2),
-                "edge": round(e, 3),
-                "stake": round(stake, 2)
-            })
-        except:
+def calc_h2h_score(matches):
+    """Средний балл H2H на поле хозяев."""
+    if not matches:
+        return 0.0
+    total = 0
+    for m in matches:
+        gf = m["score"]["fullTime"]["home"]
+        ga = m["score"]["fullTime"]["away"]
+        if gf is None or ga is None:
             continue
+        if gf > ga:
+            total += 1.0
+        elif gf == ga:
+            total += 0.5
+        else:
+            total -= 0.5  # поражение дома – минус
+    return total / len(matches) if matches else 0.0
 
-    return sorted(results, key=lambda x: x["edge"], reverse=True)
+def get_goal_diff(matches, team_id):
+    """Средняя разница голов за последние 5 матчей."""
+    if not matches:
+        return 0.0
+    total = 0
+    count = 0
+    for m in matches:
+        if m["homeTeam"]["id"] == team_id:
+            gf = m["score"]["fullTime"]["home"]
+            ga = m["score"]["fullTime"]["away"]
+        else:
+            gf = m["score"]["fullTime"]["away"]
+            ga = m["score"]["fullTime"]["home"]
+        if gf is None or ga is None:
+            continue
+        total += (gf - ga)
+        count += 1
+    return total / count if count > 0 else 0.0
+
+async def get_table_position(session, team_id, competition_code):
+    """Возвращает позицию команды в таблице (чем меньше, тем лучше)."""
+    data = await get_standings(session, competition_code)
+    if not data.get("standings"):
+        return None
+    for standing in data["standings"]:
+        for team in standing["table"]:
+            if team["team"]["id"] == team_id:
+                return team["position"]
+    return None
 
 # =====================
-# 📦 CACHE
+# SCORE CALCULATION
 # =====================
-CACHE = {}
+def compute_score(h2h_score, home_form, away_form, table_diff, goal_diff, odds):
+    """
+    h2h_score: нормализованный (-1..1)
+    home_form: 0..1
+    away_form: 0..1
+    table_diff: +1 если хозяева выше, -1 если ниже, 0 иначе
+    goal_diff: средняя разница мячей за 5 матчей
+    odds: коэффициент П1
+    """
+    norm_odds = 1 / odds  # вероятность по коэффициенту
+    score = (
+        h2h_score * 0.25 +
+        (home_form - away_form) * 0.20 +  # относительная форма
+        home_form * 0.15 +                # общая форма хозяев
+        table_diff * 0.15 +
+        goal_diff * 0.15 +
+        norm_odds * 0.10
+    )
+    return score
 
-async def build_cache():
+def get_handicap(score):
+    if score >= 0.8:
+        return "0"
+    elif score >= 0.5:
+        return "+0.5"
+    elif score >= 0.2:
+        return "+1.5"
+    elif score >= 0.0:
+        return "+2.5"
+    elif score >= -0.2:
+        return "+3.0"
+    else:
+        return "+3.5 / +4.0"
+
+# =====================
+# MAIN ENGINE
+# =====================
+async def build_football():
+    global FOOTBALL_CACHE, EXPRESS_CACHE
+    results = []
     async with aiohttp.ClientSession() as session:
-        sports = ["soccer", "icehockey_nhl", "basketball_nba", "tennis_atp"]
-        all_results = []
-        for s in sports:
-            data = await get_odds(session, s)
-            processed = process(data)
-            CACHE[s] = processed
-            all_results += processed
+        # 1. Получаем матчи Football-Data
+        fd_data = await get_scheduled_matches(session)
+        matches = fd_data.get("matches", [])
+        if not matches:
+            logger.warning("No scheduled matches from Football-Data")
+            return
 
-        # 🔥 EXPRES 4 DIVERSE PICKS
-        express = []
-        used = set()
-        for m in sorted(all_results, key=lambda x: x["edge"], reverse=True):
-            team = m["match"].split(" vs ")[0]
-            if team in used:
+        # 2. Получаем все коэффициенты The Odds API
+        odds_list = await get_all_odds(session, "soccer")
+        if not odds_list:
+            logger.warning("No odds data")
+            return
+
+        # 3. Обрабатываем каждый матч
+        for m in matches:
+            try:
+                home = m["homeTeam"]["name"]
+                away = m["awayTeam"]["name"]
+                home_id = m["homeTeam"]["id"]
+                away_id = m["awayTeam"]["id"]
+                competition_code = m["competition"]["code"]
+                utc_time = m["utcDate"]
+
+                # Временной фильтр
+                mt = datetime.fromisoformat(utc_time.replace("Z", "+00:00"))
+                now = datetime.now(ZoneInfo("Europe/Moscow"))
+                hours_left = (mt - now).total_seconds() / 3600
+                if hours_left < 1 or hours_left > 24:
+                    continue
+
+                # Коэффициенты
+                home_odds, away_odds = extract_odds(odds_list, home, away)
+                if not home_odds or not away_odds:
+                    continue
+                if home_odds < 3.5 or away_odds > 2.2:
+                    continue
+
+                # Статистика
+                # Последние матчи команд
+                home_matches = await get_team_last_matches(session, home_id)
+                away_matches = await get_team_last_matches(session, away_id)
+                await asyncio.sleep(0.5)  # задержка
+
+                # H2H
+                h2h_data = await get_h2h(session, home_id, away_id)
+                h2h_matches = h2h_data.get("matches", [])
+                h2h_score = calc_h2h_score(h2h_matches[:5])
+                await asyncio.sleep(0.5)
+
+                # Форма
+                home_form = calc_form(home_matches, home_id)
+                away_form = calc_form(away_matches, away_id)
+
+                # Разница голов
+                goal_diff = get_goal_diff(home_matches, home_id)
+
+                # Турнирная позиция
+                home_pos = await get_table_position(session, home_id, competition_code)
+                away_pos = await get_table_position(session, away_id, competition_code)
+                await asyncio.sleep(0.5)
+
+                table_diff = 0
+                if home_pos is not None and away_pos is not None:
+                    if home_pos < away_pos:
+                        table_diff = 1
+                    elif home_pos > away_pos:
+                        table_diff = -1
+
+                # Итоговый Score
+                score = compute_score(h2h_score, home_form, away_form, table_diff, goal_diff, home_odds)
+
+                # Сохраняем в БД
+                cur.execute(
+                    "INSERT INTO predictions (home, away, score, handicap, odds, time) VALUES (?, ?, ?, ?, ?, ?)",
+                    (home, away, score, get_handicap(score), home_odds, mt.isoformat())
+                )
+                conn.commit()
+
+                results.append({
+                    "home": home,
+                    "away": away,
+                    "time": mt.strftime("%H:%M"),
+                    "odds": round(home_odds, 2),
+                    "score": round(score, 3),
+                    "handicap": get_handicap(score),
+                    "confidence": round(score * (home_odds / 3.5), 3)
+                })
+
+            except Exception as e:
+                logger.error(f"Error processing match {home} vs {away}: {e}")
                 continue
-            express.append(m)
-            used.add(team)
-            if len(express) == 4:
-                break
-        CACHE["express"] = express
+
+    # Сортировка по confidence (уверенность + кэф)
+    results.sort(key=lambda x: x["confidence"], reverse=True)
+    FOOTBALL_CACHE = results[:21]
+    EXPRESS_CACHE = [m for m in results if m["score"] >= 0.3][:4]
+
+async def build_hockey():
+    global HOCKEY_CACHE
+    results = []
+    async with aiohttp.ClientSession() as session:
+        odds_list = await get_all_odds(session, "icehockey_nhl")
+        if not isinstance(odds_list, list):
+            return
+
+        for game in odds_list:
+            try:
+                home = game["home_team"]
+                away = game["away_team"]
+                commence = game["commence_time"]
+
+                home_odds, away_odds = extract_odds(odds_list, home, away)
+                if not home_odds or not away_odds:
+                    continue
+                if home_odds < 3.5 or away_odds > 2.2:
+                    continue
+
+                mt = datetime.fromisoformat(commence.replace("Z", "+00:00"))
+                now = datetime.now(ZoneInfo("Europe/Moscow"))
+                hours_left = (mt - now).total_seconds() / 3600
+                if hours_left < 1 or hours_left > 24:
+                    continue
+
+                # Для хоккея пока упрощённо
+                score = 0.5  # заглушка
+                results.append({
+                    "home": home,
+                    "away": away,
+                    "time": mt.strftime("%H:%M"),
+                    "odds": round(home_odds, 2),
+                    "score": score,
+                    "handicap": get_handicap(score),
+                    "confidence": score * (home_odds / 3.5)
+                })
+            except:
+                continue
+
+    results.sort(key=lambda x: x["confidence"], reverse=True)
+    HOCKEY_CACHE = results[:21]
+
+async def build_all():
+    await build_football()
+    await build_hockey()
+    logger.info("Cache updated")
 
 # =====================
-# 📨 FORMAT
+# FORMATTING
 # =====================
-def format(data, title):
+def format_matches(data, title):
     if not data:
-        return "❌ Нет сигналов"
-    msg = f"🧠 <b>JIN v28 STABLE PRO - {title}</b>\n\n"
-    for i, m in enumerate(data[:12], 1):
-        msg += f"{i}. {m['match']}\n"
-        msg += f"📊 Odds: {m['odds']}\n"
-        msg += f"🧠 Prob: {m['prob']}\n"
-        msg += f"🔥 Edge: {m['edge']}\n"
-        msg += f"💰 Stake: {m['stake']}\n\n"
+        return f"🧞‍♂️ {title}: сегодня лампа пуста"
+
+    msg = f"📊 <b>{title}</b>\n\n"
+    for i, m in enumerate(data, 1):
+        msg += f"{i}. {m['home']} vs {m['away']}\n"
+        msg += f"🕒 {m['time']}\n"
+        msg += f"💰 Кэф: {m['odds']}\n"
+        msg += f"🎯 Фора: {m['handicap']}\n"
+        msg += f"📈 Score: {m['score']} | Уверенность: {m['confidence']}\n\n"
     return msg
 
 # =====================
-# 🤖 HANDLERS
+# HANDLERS
 # =====================
-@dp.message(Command("start"))
+@router.message(Command("start"))
 async def start(m: Message):
-    await m.answer("🧠 JIN v28 STABLE PRO ACTIVE", reply_markup=keyboard)
+    await m.answer("🧞 JIN v5 ACTIVE\nРеальная статистика\nФутбол / Хоккей / Экспресс", reply_markup=keyboard)
 
-@dp.message(F.text == "⚽ Футбол 24H")
-async def soccer(m: Message):
-    await m.answer(format(CACHE.get("soccer", []), "FOOTBALL"))
+@router.message(F.text == "⚽ Футбол")
+async def football_cmd(m: Message):
+    await m.answer(format_matches(FOOTBALL_CACHE, "⚽ ФУТБОЛ"))
 
-@dp.message(F.text == "🏒 Хоккей 24H")
-async def nhl(m: Message):
-    await m.answer(format(CACHE.get("icehockey_nhl", []), "NHL"))
+@router.message(F.text == "🏒 Хоккей")
+async def hockey_cmd(m: Message):
+    await m.answer(format_matches(HOCKEY_CACHE, "🏒 ХОККЕЙ"))
 
-@dp.message(F.text == "🏀 NBA 24H")
-async def nba(m: Message):
-    await m.answer(format(CACHE.get("basketball_nba", []), "NBA"))
-
-@dp.message(F.text == "🎾 Теннис 24H")
-async def tennis(m: Message):
-    await m.answer(format(CACHE.get("tennis_atp", []), "TENNIS"))
-
-@dp.message(F.text == "🔥 Экспресс")
-async def exp(m: Message):
-    await m.answer(format(CACHE.get("express", []), "EXPRESS (4 PICKS)"))
+@router.message(F.text == "🍺 Экспресс")
+async def express_cmd(m: Message):
+    await m.answer(format_matches(EXPRESS_CACHE, "🍺 ЭКСПРЕСС (ТОП-4)"))
 
 # =====================
-# 🔁 LOOP
+# BACKGROUND LOOP
 # =====================
 async def loop():
     while True:
         try:
-            await build_cache()
-        except:
-            pass
-        await asyncio.sleep(1800)
+            await build_all()
+        except Exception as e:
+            logger.error(f"Loop error: {e}")
+        await asyncio.sleep(3600)  # каждый час
 
-# =====================
-# 🚀 MAIN
-# =====================
 async def main():
-    await build_cache()
     asyncio.create_task(loop())
     await dp.start_polling(bot)
 
