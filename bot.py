@@ -2,7 +2,7 @@ import asyncio
 import aiohttp
 import sqlite3
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, Router, F
@@ -87,23 +87,18 @@ async def fetch(session, url, headers=None):
 HEADERS_FD = {"X-Auth-Token": FOOTBALL_KEY}
 
 async def get_scheduled_matches(session):
-    """Получает ближайшие матчи (до 100) из Football-Data."""
     url = "https://api.football-data.org/v4/matches?status=SCHEDULED&limit=100"
     return await fetch(session, url, HEADERS_FD)
 
 async def get_team_last_matches(session, team_id, limit=5):
-    """Последние завершённые матчи команды."""
     url = f"https://api.football-data.org/v4/teams/{team_id}/matches?limit={limit}&status=FINISHED"
     return await fetch(session, url, HEADERS_FD)
 
 async def get_h2h(session, home_id, away_id, limit=5):
-    """Очные встречи (последние 5 матчей между командами)."""
-    # Получаем матчи, где home_id играет дома против away_id
     url = f"https://api.football-data.org/v4/matches?homeTeam={home_id}&awayTeam={away_id}&limit={limit}&status=FINISHED"
     return await fetch(session, url, HEADERS_FD)
 
 async def get_standings(session, competition_code):
-    """Турнирная таблица."""
     url = f"https://api.football-data.org/v4/competitions/{competition_code}/standings"
     return await fetch(session, url, HEADERS_FD)
 
@@ -115,7 +110,6 @@ async def get_all_odds(session, sport_key):
     return await fetch(session, url)
 
 def extract_odds(odds_data, home_team, away_team):
-    """Извлекает коэффициенты для конкретного матча."""
     if not isinstance(odds_data, list):
         return None, None
     for game in odds_data:
@@ -136,7 +130,6 @@ def extract_odds(odds_data, home_team, away_team):
 # STATS PROCESSING
 # =====================
 def calc_form(matches, team_id):
-    """Возвращает средний балл формы (победа=1, ничья=0.5)."""
     if not matches:
         return 0.5
     total = 0
@@ -158,7 +151,6 @@ def calc_form(matches, team_id):
     return total / count if count > 0 else 0.5
 
 def calc_h2h_score(matches):
-    """Средний балл H2H на поле хозяев."""
     if not matches:
         return 0.0
     total = 0
@@ -172,11 +164,10 @@ def calc_h2h_score(matches):
         elif gf == ga:
             total += 0.5
         else:
-            total -= 0.5  # поражение дома – минус
+            total -= 0.5
     return total / len(matches) if matches else 0.0
 
 def get_goal_diff(matches, team_id):
-    """Средняя разница голов за последние 5 матчей."""
     if not matches:
         return 0.0
     total = 0
@@ -195,7 +186,6 @@ def get_goal_diff(matches, team_id):
     return total / count if count > 0 else 0.0
 
 async def get_table_position(session, team_id, competition_code):
-    """Возвращает позицию команды в таблице (чем меньше, тем лучше)."""
     data = await get_standings(session, competition_code)
     if not data.get("standings"):
         return None
@@ -209,19 +199,11 @@ async def get_table_position(session, team_id, competition_code):
 # SCORE CALCULATION
 # =====================
 def compute_score(h2h_score, home_form, away_form, table_diff, goal_diff, odds):
-    """
-    h2h_score: нормализованный (-1..1)
-    home_form: 0..1
-    away_form: 0..1
-    table_diff: +1 если хозяева выше, -1 если ниже, 0 иначе
-    goal_diff: средняя разница мячей за 5 матчей
-    odds: коэффициент П1
-    """
-    norm_odds = 1 / odds  # вероятность по коэффициенту
+    norm_odds = 1 / odds
     score = (
         h2h_score * 0.25 +
-        (home_form - away_form) * 0.20 +  # относительная форма
-        home_form * 0.15 +                # общая форма хозяев
+        (home_form - away_form) * 0.20 +
+        home_form * 0.15 +
         table_diff * 0.15 +
         goal_diff * 0.15 +
         norm_odds * 0.10
@@ -243,82 +225,87 @@ def get_handicap(score):
         return "+3.5 / +4.0"
 
 # =====================
-# MAIN ENGINE
+# MAIN ENGINE (ИСПРАВЛЕНО: матчи из Odds API)
 # =====================
 async def build_football():
     global FOOTBALL_CACHE, EXPRESS_CACHE
     results = []
     async with aiohttp.ClientSession() as session:
-        # 1. Получаем матчи Football-Data
-        fd_data = await get_scheduled_matches(session)
-        matches = fd_data.get("matches", [])
-        if not matches:
-            logger.warning("No scheduled matches from Football-Data")
-            return
-
-        # 2. Получаем все коэффициенты The Odds API
+        # 1. Получаем коэффициенты из The Odds API (основной источник матчей)
         odds_list = await get_all_odds(session, "soccer")
-        if not odds_list:
+        if not isinstance(odds_list, list):
             logger.warning("No odds data")
             return
 
-        # 3. Обрабатываем каждый матч
-        for m in matches:
+        # 2. Получаем матчи из Football-Data для обогащения статистикой
+        fd_data = await get_scheduled_matches(session)
+        fd_matches = fd_data.get("matches", [])
+
+        # 3. Обрабатываем каждый матч из Odds API
+        for game in odds_list:
             try:
-                home = m["homeTeam"]["name"]
-                away = m["awayTeam"]["name"]
-                home_id = m["homeTeam"]["id"]
-                away_id = m["awayTeam"]["id"]
-                competition_code = m["competition"]["code"]
-                utc_time = m["utcDate"]
+                home = game["home_team"]
+                away = game["away_team"]
+                commence = game["commence_time"]
 
-                # Временной фильтр
-                mt = datetime.fromisoformat(utc_time.replace("Z", "+00:00"))
-                now = datetime.now(ZoneInfo("Europe/Moscow"))
-                hours_left = (mt - now).total_seconds() / 3600
-                if hours_left < 1 or hours_left > 24:
-                    continue
-
-                # Коэффициенты
-                home_odds, away_odds = extract_odds(odds_list, home, away)
+                home_odds, away_odds = extract_odds([game], home, away)
                 if not home_odds or not away_odds:
                     continue
                 if home_odds < 3.5 or away_odds > 2.2:
                     continue
 
-                # Статистика
-                # Последние матчи команд
-                home_matches = await get_team_last_matches(session, home_id)
-                away_matches = await get_team_last_matches(session, away_id)
-                await asyncio.sleep(0.5)  # задержка
+                mt = datetime.fromisoformat(commence.replace("Z", "+00:00"))
+                now = datetime.now(ZoneInfo("Europe/Moscow"))
+                hours_left = (mt - now).total_seconds() / 3600
+                if hours_left < 1 or hours_left > 24:
+                    continue
 
-                # H2H
-                h2h_data = await get_h2h(session, home_id, away_id)
-                h2h_matches = h2h_data.get("matches", [])
-                h2h_score = calc_h2h_score(h2h_matches[:5])
-                await asyncio.sleep(0.5)
+                # Ищем соответствующий матч в Football-Data (нечёткое сравнение)
+                fd_match = None
+                for m in fd_matches:
+                    if (m["homeTeam"]["name"].lower() in home.lower() or home.lower() in m["homeTeam"]["name"].lower()) and \
+                       (m["awayTeam"]["name"].lower() in away.lower() or away.lower() in m["awayTeam"]["name"].lower()):
+                        fd_match = m
+                        break
 
-                # Форма
-                home_form = calc_form(home_matches, home_id)
-                away_form = calc_form(away_matches, away_id)
+                if fd_match:
+                    # Полная статистика
+                    home_id = fd_match["homeTeam"]["id"]
+                    away_id = fd_match["awayTeam"]["id"]
+                    competition_code = fd_match["competition"]["code"]
 
-                # Разница голов
-                goal_diff = get_goal_diff(home_matches, home_id)
+                    home_matches = await get_team_last_matches(session, home_id)
+                    away_matches = await get_team_last_matches(session, away_id)
+                    await asyncio.sleep(0.5)
 
-                # Турнирная позиция
-                home_pos = await get_table_position(session, home_id, competition_code)
-                away_pos = await get_table_position(session, away_id, competition_code)
-                await asyncio.sleep(0.5)
+                    h2h_data = await get_h2h(session, home_id, away_id)
+                    h2h_matches = h2h_data.get("matches", [])
+                    h2h_score = calc_h2h_score(h2h_matches[:5])
+                    await asyncio.sleep(0.5)
 
-                table_diff = 0
-                if home_pos is not None and away_pos is not None:
-                    if home_pos < away_pos:
-                        table_diff = 1
-                    elif home_pos > away_pos:
-                        table_diff = -1
+                    home_form = calc_form(home_matches, home_id)
+                    away_form = calc_form(away_matches, away_id)
+                    goal_diff = get_goal_diff(home_matches, home_id)
 
-                # Итоговый Score
-                score = compute_score(h2h_score, home_form, away_form, table_diff, goal_diff, home_odds)
+                    home_pos = await get_table_position(session, home_id, competition_code)
+                    away_pos = await get_table_position(session, away_id, competition_code)
+                    await asyncio.sleep(0.5)
+
+                    table_diff = 0
+                    if home_pos is not None and away_pos is not None:
+                        if home_pos < away_pos:
+                            table_diff = 1
+                        elif home_pos > away_pos:
+                            table_diff = -1
+
+                    score = compute_score(h2h_score, home_form, away_form, table_diff, goal_diff, home_odds)
+                else:
+                    # Упрощённый расчёт (только на основе коэффициентов)
+                    h2h_score = 0.0
+                    home_form = away_form = 0.5
+                    table_diff = 0
+                    goal_diff = 0.0
+                    score = compute_score(h2h_score, home_form, away_form, table_diff, goal_diff, home_odds)
 
                 # Сохраняем в БД
                 cur.execute(
@@ -338,10 +325,9 @@ async def build_football():
                 })
 
             except Exception as e:
-                logger.error(f"Error processing match {home} vs {away}: {e}")
+                logger.error(f"Error processing {home} vs {away}: {e}")
                 continue
 
-    # Сортировка по confidence (уверенность + кэф)
     results.sort(key=lambda x: x["confidence"], reverse=True)
     FOOTBALL_CACHE = results[:21]
     EXPRESS_CACHE = [m for m in results if m["score"] >= 0.3][:4]
@@ -360,7 +346,7 @@ async def build_hockey():
                 away = game["away_team"]
                 commence = game["commence_time"]
 
-                home_odds, away_odds = extract_odds(odds_list, home, away)
+                home_odds, away_odds = extract_odds([game], home, away)
                 if not home_odds or not away_odds:
                     continue
                 if home_odds < 3.5 or away_odds > 2.2:
@@ -372,7 +358,6 @@ async def build_hockey():
                 if hours_left < 1 or hours_left > 24:
                     continue
 
-                # Для хоккея пока упрощённо
                 score = 0.5  # заглушка
                 results.append({
                     "home": home,
@@ -415,7 +400,7 @@ def format_matches(data, title):
 # =====================
 @router.message(Command("start"))
 async def start(m: Message):
-    await m.answer("🧞 JIN v5 ACTIVE\nРеальная статистика\nФутбол / Хоккей / Экспресс", reply_markup=keyboard)
+    await m.answer("🧞 JIN v5.1 ACTIVE\nРасширенный охват матчей (Odds API)\nФутбол / Хоккей / Экспресс", reply_markup=keyboard)
 
 @router.message(F.text == "⚽ Футбол")
 async def football_cmd(m: Message):
@@ -438,7 +423,7 @@ async def loop():
             await build_all()
         except Exception as e:
             logger.error(f"Loop error: {e}")
-        await asyncio.sleep(3600)  # каждый час
+        await asyncio.sleep(3600)
 
 async def main():
     asyncio.create_task(loop())
