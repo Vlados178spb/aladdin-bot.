@@ -1,7 +1,6 @@
-aiogram==3.10.0
-python-dotenv
-pillow
-requests
+aiogram
+aiohttp
+pydantic
 deep-translator
 pytz
 
