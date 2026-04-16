@@ -2,5 +2,7 @@ aiogram==3.10.0
 python-dotenv
 pillow
 requests
+deep-translator
+pytz
 
 
