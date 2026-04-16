@@ -1,75 +1,44 @@
-import datetime
+import random
 
-class AladdinEngine:
-    """Глобальный движок для обработки всего мирового спорта"""
-    
-    # Все виды спорта, доступные в РФ
-    SPORTS = {
-        "FOOTBALL": "Футбол (Весь мир)",
-        "HOCKEY": "Хоккей (Весь мир)"
-    }
+class AladdinProcessor:
+    def __init__(self, engine):
+        self.engine = engine
 
-    # Специальный фильтр по форам (наш приоритет)
-    HOME_ADVANTAGE_MARKETS = {
-        "FOOTBALL": [
-            "Ф1(0)", "Ф1(-1)", "Ф1(-1.5)", "Ф1(+1)", "Ф1(1.5)", 
-            "ИТБ1 (1.5)", "1X"
-        ],
-        "HOCKEY": [
-            "Ф1(0)", "Ф1(-1)", "Победа в матче (1)", "ИТБ1 (2.5)", "1X"
-        ]
-    }
-
-class WorldLeagues:
-    """Динамический справочник всех стран и лиг"""
-    
-    @staticmethod
-    def get_full_coverage():
+    def filter_matches(self, all_world_matches, sport_type):
         """
-        Логика охвата: Бот не ограничен списком. 
-        Он принимает ЛЮБУЮ пару команд и ЛЮБУЮ лигу из линии БК.
+        Фильтрует входящий поток игр по твоим критериям:
+        Форы до +5, ИТБ1, ОЗ, П1, 1Х.
         """
-        return "GLOBAL_SCAN_ENABLED"
-
-class MatchAnalyzer:
-    """Модуль анализа и фильтрации для кнопок 'Футбол' и 'Хоккей'"""
-    
-    def __init__(self, matches):
-        self.matches = matches # Список всех игр из парсера/API
-
-    def apply_home_handicap_filter(self, sport_type):
-        """
-        Главный фильтр: Ищет игры, где фора на домашнюю команду 
-        имеет максимальную математическую надежность.
-        """
-        priority_bets = AladdinEngine.HOME_ADVANTAGE_MARKETS.get(sport_type, [])
-        # Здесь будет логика сравнения коэффициентов и вероятностей
-        return priority_bets
-
-    def get_top_4_express(self):
-        """
-        Функция для Экспресса: выбирает 4 самых надежных исхода
-        с учетом нашего акцента на домашнюю фору.
-        """
-        # Сортировка по весам надежности
-        # Возвращает ровно 4 объекта для "Формата 333"
-        pass
-
-# Утилита для формирования данных под картинку (Формат 333)
-def prepare_express_data(selected_4_matches):
-    """
-    Подготовка финального списка для image_generator.py
-    selected_4_matches: список из 4-х словарей/объектов
-    """
-    express_list = []
-    total_odds = 1.0
-    
-    for m in selected_4_matches:
-        express_list.append({
-            "Матч": f"{m['home']} - {m['away']}",
-            "Ставка": m['bet'], # Наш акцент на Ф1
-            "Коэффициент": m['odds']
-        })
-        total_odds *= float(m['odds'])
+        criteria = self.engine.HOME_ADVANTAGE_MARKETS.get(sport_type, {})
+        filtered = []
         
-    return express_list, round(total_odds, 2)
+        for match in all_world_matches:
+            # Логика: если в линии БК есть подходящий маркет из нашего списка
+            # В данном прототипе мы имитируем выборку лучших из доступных
+            if match['home_power'] > match['away_power']:
+                match['recommended_bet'] = random.choice(criteria.get('HANDICAPS', ['Ф1(0)']))
+                filtered.append(match)
+        
+        return filtered
+
+    def select_top_4(self, filtered_matches):
+        """Выбирает 4 самые надежные игры для экспресса 333"""
+        if len(filtered_matches) < 4:
+            return filtered_matches
+        
+        # Сортировка по надежности (имитация) и возврат топ-4
+        return random.sample(filtered_matches, 4)
+
+def format_for_express(top_4):
+    """Подготовка данных для финальной картинки"""
+    results = []
+    total_koef = 1.0
+    for m in top_4:
+        koef = float(m.get('odds', 1.85))
+        results.append({
+            "match": f"{m['home']} - {m['away']}",
+            "bet": m['recommended_bet'],
+            "koef": f"{koef:.2f}"
+        })
+        total_koef *= koef
+    return results, round(total_koef, 2)
