@@ -1,10 +1,10 @@
 import asyncio
 import logging
 from bot import dp, bot  # Твой основной файл бота
-from services.processor import AladdinProcessor
+from services.services.processor import AladdinProcessor
 
 # Логирование для отслеживания работы в Railway или Termux
-logging.basicConfig(level=logging.INFO)
+from services.services.processor import AladdinProcessor
 
 async def start_aladdin_system():
     print("🚀 СИСТЕМА 'АЛАДДИН' ЗАПУЩЕНА НА МАКСИМАЛКАХ")
