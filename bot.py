@@ -8,7 +8,7 @@ from aiogram.filters import Command
 from deep_translator import GoogleTranslator
 
 # ИСПРАВЛЕННЫЙ ПУТЬ (под твою структуру папок)
-from services.services.processor import AladdinProcessor
+from services.processor import AladdinProcessor
 
 # --- КОНФИГУРАЦИЯ ---
 BOT_TOKEN = "8694698903:AAHK51pTIQo4TFcBBF1RbL4Kh5OZRiLGTiM"
