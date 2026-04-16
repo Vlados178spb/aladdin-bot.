@@ -1,0 +1,14 @@
+{
+  "football": {
+    "h2h": 0.35,
+    "home_form": 0.35,
+    "away_form": 0.30,
+    "median_loss": 0.5
+  },
+  "hockey": {
+    "h2h": 0.25,
+    "home_form": 0.45,
+    "away_form": 0.30,
+    "median_loss": 0.75
+  }
+}
