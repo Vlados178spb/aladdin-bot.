@@ -1,7 +1,8 @@
 aiogram
 aiohttp
 pydantic
-deep-translator
 pytz
+deep-translator
+
 
 
