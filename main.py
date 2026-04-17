@@ -1,26 +1,36 @@
 import asyncio
 import logging
-from bot import dp, bot  # Твой основной файл бота
-from services.services.processor import AladdinProcessor
+import sys
 
-# Логирование для отслеживания работы в Railway или Termux
-from services.services.processor import AladdinProcessor
+# Импортируем объекты напрямую из корня
+from bot import dp, bot
+from processor import processor
+
+# Настройка логирования для Railway
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
 
 async def start_aladdin_system():
     print("🚀 СИСТЕМА 'АЛАДДИН' ЗАПУЩЕНА НА МАКСИМАЛКАХ")
-    print("✅ Реальные данные: The Odds API + OpenLigaDB")
-    print("✅ Логика: Формат 333 + Самообучение")
-    
+    print("✅ Логика: Корневая структура")
+    print("✅ Статус: Готов к анализу")
+
     try:
         # Запуск процесса приема сообщений
         await dp.start_polling(bot)
     except Exception as e:
-        logging.error(f"Ошибка при работе бота: {e}")
+        logger.error(f"❌ Критическая ошибка при работе бота: {e}")
     finally:
+        # Закрываем сессию при остановке
         await bot.session.close()
+        print("🔌 Система Аладдин отключена")
 
 if __name__ == "__main__":
     try:
         asyncio.run(start_aladdin_system())
     except (KeyboardInterrupt, SystemExit):
-        logging.info("Бот выключен.")
+        logger.info("Бот остановлен пользователем")
