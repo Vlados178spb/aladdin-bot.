@@ -1,7 +1,3 @@
-import os
-from dotenv import load_dotenv
+BOT_TOKEN = "8694698903:AAHK51pTIQo4TFcBBF1RbL4Kh5OZRiLGTiM"
 
-load_dotenv()
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ODDS_API_KEY = os.getenv("ODDS_API_KEY")
+ODDS_API_KEY = "2be3c040e725dabfe695ae282049a8b0"
