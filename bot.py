@@ -3,7 +3,7 @@ import logging
 from datetime import datetime
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
-from services.services.processor import AladdinProcessor
+from processor import AladdinProcessor
 
 # --- КОНФИГУРАЦИЯ (Ключи вписаны) ---
 BOT_TOKEN = "8694698903:AAHK51pTIQo4TFcBBF1RbL4Kh5OZRiLGTiM"
