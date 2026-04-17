@@ -3,6 +3,7 @@ aiohttp
 pydantic
 pytz
 deep-translator
+python-dotenv
 
 
 
