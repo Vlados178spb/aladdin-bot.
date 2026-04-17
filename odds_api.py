@@ -1,97 +1,79 @@
-
 import requests
 import logging
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Dict, Optional
 
+# Настройка логов, чтобы видеть ошибки в Railway
 logger = logging.getLogger(__name__)
 
-# КОНФИГУРАЦИЯ (Вставь свой ключ от The Odds API)
-ODDS_API_KEY = "YOUR_ODDS_API_KEY_HERE" 
+# --- ТВОИ КЛЮЧИ (УЖЕ ВПИСАНЫ) ---
+ODDS_API_KEY = "2be3c040e725dabfe695ae282049a8b0"
 ODDS_BASE_URL = "https://api.the-odds-api.com/v4/sports"
 
 class OddsLoader:
     """
-    Загрузчик реальных данных: 
-    The Odds API (Кэфы) + OpenLigaDB (История/Результаты)
+    Загрузчик реальных данных: The Odds API
     """
     
     def __init__(self):
         self.api_key = ODDS_API_KEY
 
-    def get_current_season(self) -> str:
-        """Динамический расчет текущего сезона (напр. 2025 или 2026)"""
-        now = datetime.now()
-        return str(now.year) if now.month >= 8 else str(now.year - 1)
-
     async def fetch_real_odds(self, sport: str) -> List[Dict]:
         """
-        Получает реальные коэффициенты из The Odds API.
-        sport: 'soccer_russia_premier_league', 'icehockey_nhl', 'soccer_epl'
+        Получает реальные коэффициенты.
+        sport: 'soccer_russia_premier_league' или 'icehockey_nhl'
         """
         params = {
             "api_key": self.api_key,
             "regions": "eu",
-            "markets": "h2h,spreads", # Кэфы на победу и форы
+            "markets": "h2h",
             "oddsFormat": "decimal"
         }
         
+        # Для футбола (РПЛ) используем soccer_russia_premier_league
+        # Для хоккея (НХЛ) используем icehockey_nhl
         url = f"{ODDS_BASE_URL}/{sport}/odds"
         
         try:
-            # Используем обычный requests в потоке, чтобы не блокировать бота
+            # Используем requests.get
             response = requests.get(url, params=params)
             if response.status_code == 200:
                 data = response.json()
                 return self._parse_odds(data)
             else:
-                logger.error(f"Ошибка Odds API: {response.status_code}")
+                logger.error(f"Ошибка Odds API: {response.status_code} - {response.text}")
                 return []
         except Exception as e:
-            logger.error(f"Ошибка при запросе кэфОВ: {e}")
+            logger.error(f"Критическая ошибка при запросе кэфов: {e}")
             return []
 
     def _parse_odds(self, data: List[Dict]) -> List[Dict]:
-        """Парсинг ответа API в чистый формат для Аладдина"""
+        """Парсинг ответа API в чистый формат для процессора"""
         parsed = []
         for item in data:
             match_info = {
-                "id": item["id"],
-                "home": item["home_team"],
-                "away": item["away_team"],
-                "commence_time": item["commence_time"],
-                "odds": {}
+                "home_team": item.get("home_team"),
+                "away_team": item.get("away_team"),
+                "league": item.get("sport_title"),
+                "time": item.get("commence_time"),
+                "home_odd": 1.0, # Значение по умолчанию
+                "away_odd": 1.0
             }
-            # Берем кэфы первого доступного букмекера (обычно Pinnacle или Betfair)
+            
+            # Извлекаем кэфы из первого доступного букмекера
             if item.get("bookmakers"):
                 markets = item["bookmakers"][0].get("markets", [])
                 for m in markets:
                     if m["key"] == "h2h":
                         for outcome in m["outcomes"]:
-                            match_info["odds"][outcome["name"]] = outcome["price"]
+                            if outcome["name"] == item["home_team"]:
+                                match_info["home_odd"] = outcome["price"]
+                            else:
+                                match_info["away_odd"] = outcome["price"]
             parsed.append(match_info)
         return parsed
 
-    async def fetch_history_stats(self, team_name: str) -> Dict:
-        """
-        Получает историю из OpenLigaDB (бесплатно, без ключа).
-        Используется для проверки формы команды.
-        """
-        season = self.get_current_season()
-        # Пример для Бундеслиги/РПЛ (требует маппинга имен лиг)
-        url = f"https://api.openligadb.de/getmatchdata/bl1/{season}"
-        
-        try:
-            res = requests.get(url)
-            if res.status_code == 200:
-                matches = res.json()
-                # Фильтруем матчи конкретной команды
-                team_matches = [m for m in matches if m['team1']['teamName'] == team_name or m['team2']['teamName'] == team_name]
-                return {"history_count": len(team_matches), "recent": team_matches[-3:]}
-            return {}
-        except:
-            return {}
-
-# Глобальный объект для использования в процессоре
+# Глобальный объект для импорта в processor.py
 data_loader = OddsLoader()
+
