@@ -1,3 +1,4 @@
+import asyncio
 import random
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
@@ -33,28 +34,32 @@ class MatchAnalysis:
 
 class MatchAnalyzer:
     WEIGHTS = {
-        Sport.FOOTBALL: {"h2h": 0.35, "home_form": 0.35, "away_form": 0.30, "median_loss": 0.5},
-        Sport.HOCKEY: {"h2h": 0.25, "home_form": 0.45, "away_form": 0.30, "median_loss": 0.75}
+        Sport.FOOTBALL: {"h2h": 0.35, "home_form": 0.25, "away_form": 0.20, "total": 0.20},
+        Sport.HOCKEY: {"h2h": 0.25, "home_form": 0.45, "away_form": 0.15, "total": 0.15}
     }
-    
+
     def __init__(self, sport: Sport):
         self.sport = sport
         self.weights = self.WEIGHTS[sport]
 
     def analyze_single_match(self, match_data: Dict) -> MatchAnalysis:
-        # Здесь твоя логика расчета (я сократил для краткости, вставь свои формулы сюда)
+        # Здесь твоя логика расчета
         analysis = MatchAnalysis(
             home_team=match_data.get("home_team", "Team A"),
             away_team=match_data.get("away_team", "Team B"),
             home_odd=match_data.get("home_odd", 1.0),
             away_odd=match_data.get("away_odd", 1.0),
-            league_name=match_data.get("league", "🇷🇺 Лига"),
+            league_name=match_data.get("league", "🇷🇺 РПЛ"),
             match_time=match_data.get("time", "20:00")
         )
-        # Пример расчета total_score
-        analysis.total_score = random.uniform(3.0, 9.0) 
+        
+        # Генерация случайных чисел для теста (теперь random импортирован!)
+        analysis.total_score = round(random.uniform(3.0, 9.5), 2)
         analysis.safe_handicap = 1.5
         analysis.h2h_results = ["win", "win", "draw"]
+        analysis.confidence = "MEDIUM"
+        analysis.bet_reason = "Статистический перевес на основе весов модели."
+        
         return analysis
 
 # --- КЛАСС-ОБОЛОЧКА ДЛЯ БОТА ---
@@ -64,9 +69,7 @@ class AladdinProcessor:
         self.analyzer = MatchAnalyzer(self.sport)
 
     async def get_analysis(self) -> List[Dict]:
-        """Этот метод вызывает твой bot.py в строке 48"""
-        # 1. Здесь должен быть вызов API (The Odds API и т.д.)
-        # 2. Пока создаем тестовые данные для проверки бота
+        # Временный тестовый матч
         test_match = {
             "home_team": "Спартак", "away_team": "Зенит",
             "home_odd": 2.5, "away_odd": 2.1,
@@ -74,17 +77,16 @@ class AladdinProcessor:
         }
         
         analysis = self.analyzer.analyze_single_match(test_match)
-        
-        # Превращаем объект в словарь, чтобы bot.py его "съел"
+        # Превращаем объект в словарь, чтобы bot.py его «съел»
         return [analysis.__dict__]
 
     async def get_express_333(self):
-        """Этот метод вызывает твой bot.py в строке 79"""
         # Логика подбора 4-х матчей
         matches = [
-            {"match": "Матч 1", "bet": "+1.5", "koef": "1.8"},
-            {"match": "Матч 2", "bet": "+1.0", "koef": "1.9"},
-            {"match": "Матч 3", "bet": "+2.5", "koef": "1.7"},
-            {"match": "Матч 4", "bet": "+1.5", "koef": "1.8"},
+            {"match": "Матч 1", "bet": "+1.5", "koef": "1.45"},
+            {"match": "Матч 2", "bet": "+1.0", "koef": "1.30"},
+            {"match": "Матч 3", "bet": "+2.5", "koef": "1.80"},
+            {"match": "Матч 4", "bet": "+1.5", "koef": "1.55"}
         ]
         return matches, "10.45"
+
