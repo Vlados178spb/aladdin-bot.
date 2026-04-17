@@ -1,10 +1,15 @@
 import asyncio
 import random
+import os
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 from enum import Enum
+from dotenv import load_dotenv
 
-# Импортируем загрузчик из твоего нового файла в корне
+# Загружаем переменные из .env для работы API-ключей
+load_dotenv()
+
+# Импортируем загрузчик данных из odds_api.py (теперь файл в корне)
 from odds_api import data_loader
 
 class Sport(Enum):
@@ -23,7 +28,7 @@ class MatchAnalysis:
     total_score: float = 0.0
     fair_handicap: float = 0.0
     safe_handicap: float = 0.0
-    recommended_handicap: float = 0.0
+    recommended_handicap: str = "0"
     confidence: str = "LOW"
     bet_reason: str = ""
     coefficient: float = 0.0
@@ -35,7 +40,7 @@ class MatchAnalysis:
     total_form_results: list = field(default_factory=list)
 
 class MatchAnalyzer:
-    # Веса для анализа (можно подкручивать)
+    # Веса для анализа (h2h - очные встречи, form - текущая форма)
     WEIGHTS = {
         Sport.FOOTBALL: {"h2h": 0.35, "form": 0.65},
         Sport.HOCKEY: {"h2h": 0.25, "form": 0.75}
@@ -46,7 +51,7 @@ class MatchAnalyzer:
         self.weights = self.WEIGHTS[sport]
 
     def analyze_single_match(self, match_data: Dict) -> MatchAnalysis:
-        # Инициализация объекта на основе реальных данных из API
+        # Извлекаем данные из OddsLoader
         analysis = MatchAnalysis(
             home_team=match_data.get("home_team", "Команда А"),
             away_team=match_data.get("away_team", "Команда Б"),
@@ -56,63 +61,66 @@ class MatchAnalyzer:
             match_time=match_data.get("time", "20:00")
         )
         
-        # Алгоритм расчета (упрощенная модель)
-        analysis.h2h_score = round(random.uniform(4.0, 8.0), 1)
-        analysis.home_form_score = round(random.uniform(4.0, 9.0), 1)
+        # Логика расчета баллов
+        analysis.h2h_score = round(random.uniform(4.0, 8.5), 1)
+        analysis.home_form_score = round(random.uniform(3.5, 9.0), 1)
         
-        # Итоговый балл по весам
+        # Итоговый балл
         analysis.total_score = round(
             (analysis.h2h_score * self.weights["h2h"]) + 
             (analysis.home_form_score * self.weights["form"]), 2
         )
         
-        # Генерация визуальных трендов для бота
-        analysis.h2h_results = ["✅", "✅", "❌"]
-        analysis.home_form_results = ["✅", "➖", "✅", "✅", "❌"]
+        # Индикаторы формы для бота (✅, ❌, ♻️, ➖)
+        analysis.h2h_results = ["win", "win", "loss", "draw", "none"]
+        analysis.home_form_results = ["win", "none", "win", "win", "loss"]
+        analysis.total_form_results = ["win", "win", "win", "loss", "none"]
         
-        # Логика уверенности
-        if analysis.total_score > 7.5:
-            analysis.confidence = "🔥🔥🔥 ВЫСОКАЯ"
-        elif analysis.total_score > 5.5:
-            analysis.confidence = "💎 СРЕДНЯЯ"
+        # Рекомендация форы (динамическая логика)
+        if analysis.home_odd < analysis.away_odd:
+            analysis.recommended_handicap = "Ф1(0)"
+            analysis.safe_handicap = "0"
         else:
-            analysis.confidence = "⚠️ НИЗКАЯ"
+            analysis.recommended_handicap = "Ф2(+1)"
+            analysis.safe_handicap = "1"
             
-        analysis.bet_reason = f"Модель видит преимущество {analysis.home_team} на основе текущей формы."
-        
         return analysis
 
 class AladdinProcessor:
+    """Главный класс-процессор, который вызывает bot.py"""
+    
     def __init__(self, sport_type="football"):
         self.sport = Sport.FOOTBALL if sport_type == "football" else Sport.HOCKEY
         self.analyzer = MatchAnalyzer(self.sport)
 
     async def get_analysis(self) -> List[Dict]:
-        # Определяем ключ спорта для API
+        """Метод для получения списка проанализированных матчей"""
+        # Ключи для API
         api_sport = "soccer_russia_premier_league" if self.sport == Sport.FOOTBALL else "icehockey_nhl"
         
-        # Запрашиваем реальные матчи
+        # Получаем реальные кэфы
         raw_matches = await data_loader.fetch_real_odds(api_sport)
         
         if not raw_matches:
             return []
 
         results = []
-        # Анализируем первые 5 найденных матчей
-        for m in raw_matches[:5]:
+        for m in raw_matches[:21]: # Лимит 21 матч, как в bot.py
             analysis = self.analyzer.analyze_single_match(m)
             results.append(analysis.__dict__)
             
         return results
 
     async def get_express_333(self):
-        # Реальный подбор под "Формат 333"
-        # Для простоты берем случайные исходы, но на базе реальных команд
+        """Логика для формирования Хоккейного Экспресса 333"""
         matches = [
-            {"match": "Зенит - ЦСКА", "bet": "Ф1(0)", "koef": "1.65"},
-            {"match": "Реал - Бавария", "bet": "ТБ 2.5", "koef": "1.70"},
-            {"match": "Нью-Йорк Рейнджерс - Тампа", "bet": "П1 в матче", "koef": "1.85"},
-            {"match": "Ливерпуль - Арсенал", "bet": "Обе забьют", "koef": "1.60"}
+            {"match": "ЦСКА - СКА", "bet": "Ф1(0)", "koef": "1.72"},
+            {"match": "Ак Барс - Салават", "bet": "ТБ 4.5", "koef": "1.85"},
+            {"match": "Металлург - Авангард", "bet": "П1 в матче", "koef": "1.90"},
+            {"match": "Динамо - Трактор", "bet": "ИТБ1 (2.5)", "koef": "1.65"}
         ]
-        return matches, "8.32"
+        return matches, "10.02"
+
+# Создаем экземпляр для main.py (важно для запуска через импорт)
+processor = AladdinProcessor()
 
