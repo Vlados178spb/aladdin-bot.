@@ -1,69 +1,63 @@
-# ======================================================
-#  A L A D D I N - B O T
-#  Ultimate Performance + Self-Learning
-#  Updated: April 2026
-# ======================================================
+# ==============================================
+# A L A D D I N - B O T
+# Ultimate Performance + Self-Learning
+# Updated: April 2026
+# ==============================================
 
-# ----- Telegram Bot Framework -----
-aiogram==3.12.0                     # Асинхронный фреймворк для Telegram
-python-dotenv==1.0.1                # Переменные окружения
+# --- Telegram Bot Framework ---
+aiogram==3.12.0
+python-dotenv==1.0.1
 
-# ----- Odds-API.io SDK (Python) -----
-odds-api-io==1.0.0                  # Официальный Python SDK для Odds-API.io
-# Документация: https://docs.odds-api.io
-# GitHub: https://github.com/odds-api-io/odds-api-python
+# --- Odds-API.io SDK (Python) ---
+odds-api-io==1.0.0
 
-# ----- HTTP Requests & Async I/O -----
-aiohttp==3.11.12                    # Асинхронные HTTP-запросы (API коэффициентов)
-requests==2.32.3                    # Синхронные HTTP-запросы (запасной вариант)
-uvloop==0.20.0                      # Ускоряет asyncio в 2 раза
-aiodns==3.2.0                       # Ускоряет DNS для aiohttp
+# --- HTTP Requests & Async I/O ---
+aiohttp==3.11.12
+requests==2.32.3
+uvloop==0.20.0
+aiodns==3.2.0
 
-# ----- Data Processing & Analysis -----
-pandas==3.0.0                       # Основная библиотека для анализа данных
-polars==1.16.0                      # Обработка данных в 10x быстрее pandas
-numpy==2.2.3                        # Матричные операции
-numba==0.60.0                       # JIT-компиляция Python-циклов
+# --- Data Processing & Analysis ---
+pandas==3.0.0
+polars==1.16.0
+numpy==2.2.3
+numba==0.60.0
 
-# ----- Databases & Caching -----
-sqlalchemy==2.0.49                  # ORM для работы с базами данных
-psycopg2-binary==2.9.10             # Драйвер для PostgreSQL
-redis==5.2.1                        # Кэш коэффициентов и состояний моделей
-aioredis==2.0.1                     # Асинхронный клиент Redis
+# --- Databases & Caching ---
+sqlalchemy==2.0.49
+psycopg2-binary==2.9.10
+redis==5.2.1
+aioredis==2.0.1
 
-# ----- Machine Learning & Self-Learning -----
-xgboost==3.2.1.1                    # Градиентный бустинг (оптимизированный)
-scikit-learn==1.8.0                 # Стандартные ML-алгоритмы
-river==0.21.0                       # Онлайн-обучение после каждого матча
-pymc==5.20.0                        # Байесовская оценка неопределённости
-arviz==0.20.0                       # Визуализация байесовских моделей
-stable-baselines3==2.5.0            # Reinforcement Learning
-gymnasium==1.0.0                    # Среда для RL
-shap==0.46.0                        # Объяснение предсказаний модели
-optuna==4.2.0                       # Автоматический подбор гиперпараметров
+# --- Machine Learning & Self-Learning ---
+xgboost==3.2.1.1
+scikit-learn==1.8.0
+river==0.21.0
+pymc==5.20.0
+arviz==0.20.0
+stable-baselines3==2.5.0
+gymnasium==1.0.0
+shap==0.46.0
+optuna==4.2.0
 
-# ----- Scheduling & Timezones -----
-schedule==1.2.2                     # Планировщик задач
-pytz==2025.2                        # Работа с часовыми поясами (Москва)
+# --- Scheduling & Timezones ---
+schedule==1.2.2
+pytz==2025.2
 
-# ----- Translation & Styling -----
-deep-translator==1.11.4             # Перевод текстов
-# Для красивых шрифтов требуется дополнительная настройка (см. инструкции ниже)
+# --- Translation & Styling ---
+deep-translator==1.11.4
 
-# ----- Testing -----
-pytest==8.3.5                       # Тестирование
+# --- Logging & Monitoring ---
+loguru==0.7.3
+sentry-sdk==2.22.0
+prometheus-client==0.21.1
+psutil==7.0.0
 
-# ----- Logging & Monitoring -----
-loguru==0.7.3                       # Красивое логирование
-sentry-sdk==2.22.0                  # Отслеживание ошибок
-prometheus-client==0.21.1           # Метрики производительности
-psutil==7.0.0                       # Мониторинг CPU/RAM
+# --- Web Interface (optional) ---
+fastapi==0.115.11
+uvicorn[standard]==0.34.0
 
-# ----- Web Interface (optional) -----
-fastapi==0.115.11                   # API для админки
-uvicorn[standard]==0.34.0           # Сервер для FastAPI
-
-# ----- Utilities -----
-click==8.1.8                        # CLI-команды для админа
-tqdm==4.67.1                        # Прогресс-бары при обучении
-joblib==1.4.2                       # Сохранение/загрузка ML-моделей
+# --- Utilities ---
+click==8.1.8
+tqdm==4.67.1
+joblib==1.4.2
