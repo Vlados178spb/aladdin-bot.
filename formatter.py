@@ -7,7 +7,7 @@ FLAGS = {
     "argentina": "🇦🇷", "russia": "🇷🇺", "usa": "🇺🇸", "canada": "🇨🇦",
     "sweden": "🇸🇪", "finland": "🇫🇮", "czech": "🇨🇿", "switzerland": "🇨🇭",
     "belarus": "🇧🇾", "kazakhstan": "🇰🇿", "ukraine": "🇺🇦", "turkey": "🇹🇷",
-    "scotland": "🏴󠁧󠁢󠁳󠁣󠁴󠁿", "norway": "🇳🇴", "denmark": "🇩🇰", "poland": "🇵🇱"
+    "scotland": "🇳🇴", "denmark": "🇩🇰", "poland": "🇵🇱"
 }
 
 def get_flag(team: str) -> str:
