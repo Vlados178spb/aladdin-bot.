@@ -1,6 +1,7 @@
 aiogram
 aiohttp
 pytz
-pip install 
+pip 
+install 
 python-telegram-bot 
 requests
