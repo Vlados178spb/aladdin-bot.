@@ -1,50 +1,53 @@
 import logging
 import requests
 from datetime import datetime
-from zoneinfo import ZoneInfo
+import pytz
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# --- НАСТРОЙКИ (ВАШИ КЛЮЧИ) ---
+# --- НАСТРОЙКИ (ваши ключи) ---
 BOT_TOKEN = "8694698903:AAHK51pTIQo4TFcBBF1RbL4Kh5OZRiLGTiM"
 ODDS_API_KEY = "2be3c040e725dabfe695ae282049a8b0"
 SPORTS_URL = f"https://api.the-odds-api.com/v4/sports/?apiKey={ODDS_API_KEY}"
-ODDS_URL_BASE = f"https://api.the-odds-api.com/v4/sports"
+ODDS_URL_BASE = "https://api.the-odds-api.com/v4/sports"
 
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 
 def get_all_soccer_leagues():
-    """Получает ключи всех доступных футбольных лиг (группа 'Soccer')."""
+    """Получает список всех доступных футбольных лиг."""
     try:
         resp = requests.get(SPORTS_URL)
         resp.raise_for_status()
         sports = resp.json()
         soccer_keys = [sport['key'] for sport in sports if sport['group'] == 'Soccer']
-        logging.info(f"Найдены футбольные лиги: {soccer_keys}")
+        logging.info(f"Найдено лиг: {len(soccer_keys)}")
         return soccer_keys
     except Exception as e:
-        logging.error(f"Ошибка получения списка лиг: {e}")
+        logging.error(f"Ошибка получения лиг: {e}")
         return []
 
 def get_filtered_matches_for_league(league_key):
-    """Получает и фильтрует матчи для одной конкретной лиги."""
+    """Получает матчи одной лиги и фильтрует их."""
     matches = []
     try:
         url = f"{ODDS_URL_BASE}/{league_key}/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h"
         resp = requests.get(url)
         resp.raise_for_status()
         events = resp.json()
-        
+
         for event in events:
-            # Извлекаем время матча
             commence_time = event.get("commence_time")
             if not commence_time:
                 continue
+
+            # Время МСК
             dt_utc = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
-            dt_msk = dt_utc.astimezone(ZoneInfo("Europe/Moscow"))
+            dt_msk = dt_utc.astimezone(pytz.timezone("Europe/Moscow"))
             time_str = dt_msk.strftime("%H:%M")
 
-            # Извлекаем коэффициенты для рынка h2h
             bookmakers = event.get("bookmakers", [])
             if not bookmakers:
                 continue
@@ -77,42 +80,39 @@ def get_filtered_matches_for_league(league_key):
                     "sport_title": event.get("sport_title", league_key),
                 })
     except Exception as e:
-        logging.error(f"Ошибка получения матчей для {league_key}: {e}")
-    
+        logging.error(f"Ошибка обработки лиги {league_key}: {e}")
+
     return matches
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 Ищу матчи по всем футбольным лигам... Это может занять некоторое время.")
-    
-    soccer_leagues = get_all_soccer_leagues()
-    if not soccer_leagues:
-        await update.message.reply_text("😕 Не удалось найти ни одной футбольной лиги.")
+    await update.message.reply_text("🔍 Ищу подходящие матчи по всем футбольным лигам...")
+
+    leagues = get_all_soccer_leagues()
+    if not leagues:
+        await update.message.reply_text("❌ Не удалось получить список лиг.")
         return
 
-    all_filtered_matches = []
-    for league_key in soccer_leagues:
-        league_matches = get_filtered_matches_for_league(league_key)
-        all_filtered_matches.extend(league_matches)
+    all_matches = []
+    for league in leagues:
+        all_matches.extend(get_filtered_matches_for_league(league))
 
-    if not all_filtered_matches:
+    if not all_matches:
         await update.message.reply_text("😕 Подходящих матчей не найдено.")
         return
 
-    # СОРТИРОВКА ПО ВРЕМЕНИ
-    all_filtered_matches.sort(key=lambda x: x["time"])
+    all_matches.sort(key=lambda x: x["time"])
 
-    for m in all_filtered_matches:
-        msg = (
+    for m in all_matches:
+        text = (
             f"🇷🇺 {m['sport_title']}\n"
             f"🕰️ {m['time_str']} (МСК)\n"
             f"🏟️ {m['home_team']} ({m['home_odd']:.2f}) & {m['away_team']} ({m['away_odd']:.2f})"
         )
-        await update.message.reply_text(msg)
+        await update.message.reply_text(text)
 
     await update.message.reply_text(
-        f"✅ Готово! Найдено матчей: {len(all_filtered_matches)}.\n"
-        "💡 Используйте /start для обновления.\n"
-        "⚠️ Помните, каждый запуск тратит несколько запросов к API."
+        f"✅ Готово! Найдено матчей: {len(all_matches)}.\n"
+        "Для обновления нажмите /start"
     )
 
 if __name__ == "__main__":
