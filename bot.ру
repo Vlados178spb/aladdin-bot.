@@ -1,111 +1,102 @@
-import asyncio
-import aiohttp
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
+import logging
+import requests
 from datetime import datetime
-import pytz
+from zoneinfo import ZoneInfo
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
+# --- НАСТРОЙКИ ---
 BOT_TOKEN = "8694698903:AAHK51pTIQo4TFcBBF1RbL4Kh5OZRiLGTiM"
 ODDS_API_KEY = "2be3c040e725dabfe695ae282049a8b0"
+# Спорт: футбол. Регион: 'eu' (европейские букмекеры). Рынок: 'h2h' (победитель матча)
+API_URL = f"https://api.the-odds-api.com/v4/sports/soccer_epl/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h"
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-MSK = pytz.timezone("Europe/Moscow")
+# --- ПОЛУЧЕНИЕ И ФИЛЬТРАЦИЯ ДАННЫХ ---
+def get_filtered_matches():
+    try:
+        resp = requests.get(API_URL)
+        resp.raise_for_status()
+        data = resp.json()
+        matches = []
 
-# Получение матчей
-async def get_matches():
-    url = f"https://api.the-odds-api.com/v4/sports/soccer/odds"
-    params = {
-        "apiKey": ODDS_API_KEY,
-        "regions": "eu",
-        "markets": "h2h",
-        "oddsFormat": "decimal"
-    }
+        for event in data:
+            # Извлекаем время матча
+            commence_time = event.get("commence_time")
+            if not commence_time:
+                continue
+            dt_utc = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
+            dt_msk = dt_utc.astimezone(ZoneInfo("Europe/Moscow"))
+            time_str = dt_msk.strftime("%H:%M")
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, params=params) as resp:
-            if resp.status != 200:
-                return []
-            return await resp.json()
+            # Извлекаем коэффициенты для рынка h2h
+            bookmakers = event.get("bookmakers", [])
+            if not bookmakers:
+                continue
+            # Для простоты берём первого букмекера (обычно Pinnacle или Bet365)
+            markets = bookmakers[0].get("markets", [])
+            if not markets:
+                continue
+            outcomes = markets[0].get("outcomes", [])
+            if len(outcomes) < 2:
+                continue
 
+            home_odd = away_odd = None
+            for outcome in outcomes:
+                if outcome["name"] == event["home_team"]:
+                    home_odd = outcome["price"]
+                elif outcome["name"] == event["away_team"]:
+                    away_odd = outcome["price"]
 
-# Фильтр матчей
-def filter_matches(matches):
-    result = []
+            if home_odd is None or away_odd is None:
+                continue
 
-    for match in matches:
-        try:
-            book = match["bookmakers"][0]
-            outcomes = book["markets"][0]["outcomes"]
-
-            home = outcomes[0]
-            away = outcomes[1]
-
-            home_odds = home["price"]
-            away_odds = away["price"]
-
-            # ФИЛЬТР
-            if home_odds >= 3.6 and away_odds <= 2.1:
-                time_utc = datetime.fromisoformat(match["commence_time"].replace("Z", "+00:00"))
-                time_msk = time_utc.astimezone(MSK)
-
-                result.append({
-                    "time": time_msk,
-                    "home": match["home_team"],
-                    "away": match["away_team"],
-                    "home_odds": home_odds,
-                    "away_odds": away_odds,
-                    "country": match["sport_title"]
+            # ФИЛЬТР: хозяева <= 3.6 И гости <= 2.1
+            if home_odd <= 3.6 and away_odd <= 2.1:
+                matches.append({
+                    "home_team": event["home_team"],
+                    "away_team": event["away_team"],
+                    "home_odd": home_odd,
+                    "away_odd": away_odd,
+                    "time": dt_msk,
+                    "time_str": time_str,
+                    "sport_title": event.get("sport_title", "Football"),
                 })
 
-        except:
-            continue
+        # СОРТИРОВКА ПО ВРЕМЕНИ
+        matches.sort(key=lambda x: x["time"])
+        return matches
 
-    # сортировка по времени
-    result.sort(key=lambda x: x["time"])
-    return result
+    except Exception as e:
+        logging.error(f"Ошибка при получении матчей: {e}")
+        return []
 
-
-# Красивый вывод
-def format_matches(matches):
+# --- КОМАНДА /start ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    matches = get_filtered_matches()
     if not matches:
-        return "❌ Нет подходящих матчей"
+        await update.message.reply_text("😕 Подходящих матчей не найдено.")
+        return
 
-    text = "🔥 Подходящие матчи:\n\n"
-
+    # Отправляем каждый матч отдельным сообщением
     for m in matches:
-        time_str = m["time"].strftime("%H:%M")
-
-        text += (
-            f"🌍 {m['country']}\n"
-            f"🕰️ {time_str} (МСК)\n"
-            f"🏟️ {m['home']} ({m['home_odds']}) "
-            f"vs {m['away']} ({m['away_odds']})\n\n"
+        msg = (
+            f"🇷🇺 {m['sport_title']}\n"
+            f"🕰️ {m['time_str']} (МСК)\n"
+            f"🏟️ {m['home_team']} ({m['home_odd']:.2f}) & {m['away_team']} ({m['away_odd']:.2f})"
         )
+        await update.message.reply_text(msg)
 
-    return text
+    # Информация о лимитах API (полезно для бесплатного тарифа)
+    await update.message.reply_text(
+        "✅ Готово! Это все подходящие матчи.\n"
+        "💡 Используйте /start для обновления."
+    )
 
-
-# Команды
-@dp.message(Command("start"))
-async def start(msg: types.Message):
-    await msg.answer("🤖 Бот фильтра запущен\nНапиши /find")
-
-@dp.message(Command("find"))
-async def find(msg: types.Message):
-    await msg.answer("⏳ Ищу матчи...")
-
-    matches = await get_matches()
-    filtered = filter_matches(matches)
-    text = format_matches(filtered)
-
-    await msg.answer(text)
-
-
-# Запуск
-async def main():
-    await dp.start_polling(bot)
-
+# --- ЗАПУСК БОТА ---
 if __name__ == "__main__":
-    asyncio.run(main())
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    print("🚀 Бот запущен...")
+    app.run_polling()
