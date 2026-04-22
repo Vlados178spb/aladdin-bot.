@@ -1,0 +1,111 @@
+import asyncio
+import aiohttp
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from datetime import datetime
+import pytz
+
+BOT_TOKEN = "8694698903:AAHK51pTIQo4TFcBBF1RbL4Kh5OZRiLGTiM"
+ODDS_API_KEY = "2be3c040e725dabfe695ae282049a8b0"
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+
+MSK = pytz.timezone("Europe/Moscow")
+
+# Получение матчей
+async def get_matches():
+    url = f"https://api.the-odds-api.com/v4/sports/soccer/odds"
+    params = {
+        "apiKey": ODDS_API_KEY,
+        "regions": "eu",
+        "markets": "h2h",
+        "oddsFormat": "decimal"
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, params=params) as resp:
+            if resp.status != 200:
+                return []
+            return await resp.json()
+
+
+# Фильтр матчей
+def filter_matches(matches):
+    result = []
+
+    for match in matches:
+        try:
+            book = match["bookmakers"][0]
+            outcomes = book["markets"][0]["outcomes"]
+
+            home = outcomes[0]
+            away = outcomes[1]
+
+            home_odds = home["price"]
+            away_odds = away["price"]
+
+            # ФИЛЬТР
+            if home_odds >= 3.6 and away_odds <= 2.1:
+                time_utc = datetime.fromisoformat(match["commence_time"].replace("Z", "+00:00"))
+                time_msk = time_utc.astimezone(MSK)
+
+                result.append({
+                    "time": time_msk,
+                    "home": match["home_team"],
+                    "away": match["away_team"],
+                    "home_odds": home_odds,
+                    "away_odds": away_odds,
+                    "country": match["sport_title"]
+                })
+
+        except:
+            continue
+
+    # сортировка по времени
+    result.sort(key=lambda x: x["time"])
+    return result
+
+
+# Красивый вывод
+def format_matches(matches):
+    if not matches:
+        return "❌ Нет подходящих матчей"
+
+    text = "🔥 Подходящие матчи:\n\n"
+
+    for m in matches:
+        time_str = m["time"].strftime("%H:%M")
+
+        text += (
+            f"🌍 {m['country']}\n"
+            f"🕰️ {time_str} (МСК)\n"
+            f"🏟️ {m['home']} ({m['home_odds']}) "
+            f"vs {m['away']} ({m['away_odds']})\n\n"
+        )
+
+    return text
+
+
+# Команды
+@dp.message(Command("start"))
+async def start(msg: types.Message):
+    await msg.answer("🤖 Бот фильтра запущен\nНапиши /find")
+
+@dp.message(Command("find"))
+async def find(msg: types.Message):
+    await msg.answer("⏳ Ищу матчи...")
+
+    matches = await get_matches()
+    filtered = filter_matches(matches)
+    text = format_matches(filtered)
+
+    await msg.answer(text)
+
+
+# Запуск
+async def main():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
